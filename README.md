@@ -24,6 +24,8 @@ The bot never DMs, never pings, and never posts unsolicited chat messages. Tradi
    - Bot permissions: `View Channels`, `Send Messages`, `Embed Links`, `Read Message History`, `Manage Guild` (invite stats), `View Audit Log` (kick vs leave), `Manage Messages` (optional, only used if you re-run `/setup_ticker` in a new channel)
 6. Invite the bot with the generated URL.
 
+Slash commands are synced to each server on startup (they should appear within a few seconds). `/analytics` only shows for members with **Manage Server**. If the menu is empty, fully restart the bot, then restart the Discord client (Ctrl/Cmd+R). Re-invite with the `applications.commands` scope if the bot was added without it.
+
 ### 2. Run locally
 
 ```bash
@@ -66,7 +68,7 @@ All replies are ephemeral except the ticker (edited in place) and the optional d
 | `/analytics chatters` | Manage Server | Who generates the conversation (counts + %). |
 | `/analytics words` | Manage Server | Top meaningful words (NLTK-style stop words stripped) and longest-word record. |
 | `/analytics pings` | Manage Server | Top pingers and most-mentioned members. |
-| `/analytics everyone` | Manage Server | Who uses `@everyone`. |
+| `/analytics massping` | Manage Server | Who uses `@everyone`. |
 | `/analytics channels` | Manage Server | Most active text channels. |
 | `/analytics schedule` | Manage Server | Busiest hours (UTC) and weekdays. |
 | `/analytics voice` | Manage Server | Voice minutes and Voice XP (1 XP / minute). |

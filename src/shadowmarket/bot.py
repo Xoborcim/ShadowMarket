@@ -40,6 +40,7 @@ class ShadowMarketBot(commands.Bot):
         self.cache = MarketCache()
         self.analytics = AnalyticsBuffer()
         self.started_at = datetime.now(timezone.utc)
+        self._synced_commands = False
 
     async def setup_hook(self) -> None:
         await self.db.connect()
@@ -47,16 +48,34 @@ class ShadowMarketBot(commands.Bot):
         for extension in EXTENSIONS:
             await self.load_extension(extension)
 
-        if DEV_GUILD_ID:
-            guild = discord.Object(id=DEV_GUILD_ID)
-            self.tree.copy_global_to(guild=guild)
-            synced = await self.tree.sync(guild=guild)
-            log.info("Synced %s guild commands to %s", len(synced), DEV_GUILD_ID)
-        else:
-            synced = await self.tree.sync()
-            log.info("Synced %s global commands", len(synced))
-
+        names = [cmd.name for cmd in self.tree.get_commands()]
+        log.info("Command tree loaded: %s", ", ".join(names) or "(empty)")
         self.tree.error(self.on_app_command_error)
+
+    async def _sync_app_commands(self) -> None:
+        """Guild sync is instant; global sync can take up to an hour."""
+        guilds = list(self.guilds)
+        if DEV_GUILD_ID and not any(g.id == DEV_GUILD_ID for g in guilds):
+            guilds.append(discord.Object(id=DEV_GUILD_ID))  # type: ignore[arg-type]
+
+        for guild in guilds:
+            try:
+                self.tree.copy_global_to(guild=guild)
+                synced = await self.tree.sync(guild=guild)
+                log.info(
+                    "Synced %s commands instantly to guild %s: %s",
+                    len(synced),
+                    getattr(guild, "id", guild),
+                    ", ".join(c.name for c in synced),
+                )
+            except discord.HTTPException:
+                log.exception("Guild command sync failed for %s", getattr(guild, "id", guild))
+
+        try:
+            synced = await self.tree.sync()
+            log.info("Synced %s global commands (may take up to an hour to appear)", len(synced))
+        except discord.HTTPException:
+            log.exception("Global command sync failed")
 
     async def _hydrate_cache(self) -> None:
         pairs = await self.db.all_active_stock_keywords()
@@ -99,6 +118,17 @@ class ShadowMarketBot(commands.Bot):
             status=discord.Status.online,
             activity=discord.Activity(type=discord.ActivityType.watching, name="the ticker"),
         )
+        if not self._synced_commands:
+            self._synced_commands = True
+            await self._sync_app_commands()
+
+    async def on_guild_join(self, guild: discord.Guild) -> None:
+        try:
+            self.tree.copy_global_to(guild=guild)
+            synced = await self.tree.sync(guild=guild)
+            log.info("Synced %s commands to new guild %s", len(synced), guild.id)
+        except discord.HTTPException:
+            log.exception("Command sync failed for new guild %s", guild.id)
 
     async def on_message(self, message: discord.Message) -> None:
         if message.author.bot or message.webhook_id is not None:

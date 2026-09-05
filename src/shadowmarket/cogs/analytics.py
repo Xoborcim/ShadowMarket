@@ -355,7 +355,7 @@ class AnalyticsCog(commands.Cog):
         embed.add_field(name="Most mentioned", value=rank_lines(victims, namer, "n", lambda v: f"{int(v):,}"), inline=False)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @analytics.command(name="everyone", description="@everyone usage")
+    @analytics.command(name="massping", description="Who uses @everyone")
     @app_commands.guild_only()
     async def everyone(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
