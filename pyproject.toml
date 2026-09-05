@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shadowmarket"
+version = "1.0.0"
+description = "Zero-spam Discord bot: inside-joke stock market + stealth bounty board"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "discord.py>=2.4.0,<3",
+    "aiosqlite>=0.20.0",
+    "python-dotenv>=1.0.1",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+asyncio_mode = "auto"

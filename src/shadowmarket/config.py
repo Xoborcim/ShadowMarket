@@ -1,0 +1,41 @@
+"""Tunable economy constants from the ShadowMarket specification."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
+DEV_GUILD_ID = int(os.getenv("DEV_GUILD_ID")) if os.getenv("DEV_GUILD_ID") else None
+DATABASE_PATH = Path(os.getenv("DATABASE_PATH", "data/shadowmarket.db"))
+
+STARTING_BALANCE = 1000.0
+IPO_BASE_COST = 500.0
+IPO_MULTIPLIER = 50.0
+INITIAL_PRICE = 100.0
+PRICE_FLOOR = 10.0
+VOLATILITY_ALPHA = 0.5
+DECAY_RATE = 0.02
+
+VOLUME_COOLDOWN_SECONDS = 60
+FLUSH_INTERVAL_SECONDS = 60
+PRICE_UPDATE_HOURS = 1
+TICKER_UPDATE_MINUTES = 15
+EXPIRY_CHECK_SECONDS = 60
+
+BOUNTY_DURATION_HOURS = 24
+BOUNTY_EXPIRE_REFUND_RATE = 0.80
+STEALTH_COST_MULTIPLIER = 2.0
+SUSPECT_FAIL_FINE = 100.0
+
+DEAD_SERVER_DAILY_MESSAGES = 50
+
+KEYWORD_MAX_LENGTH = 64
+MAX_TRADE_SHARES = 10_000
+MAX_BOUNTY_REWARD = 1_000_000
+MIN_TRADE_SHARES = 1
+MIN_BOUNTY_REWARD = 1
