@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import aiosqlite
@@ -79,6 +79,95 @@ CREATE INDEX IF NOT EXISTS idx_bounties_guild_status ON Bounties(guild_id, statu
 CREATE INDEX IF NOT EXISTS idx_portfolios_user ON Portfolios(user_id, guild_id);
 """
 
+ANALYTICS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS UserActivity (
+    guild_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    message_count INTEGER DEFAULT 0,
+    ping_sent INTEGER DEFAULT 0,
+    ping_received INTEGER DEFAULT 0,
+    everyone_sent INTEGER DEFAULT 0,
+    last_message_at TEXT,
+    PRIMARY KEY (guild_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS ChannelActivity (
+    guild_id TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    message_count INTEGER DEFAULT 0,
+    PRIMARY KEY (guild_id, channel_id)
+);
+
+CREATE TABLE IF NOT EXISTS HourlyActivity (
+    guild_id TEXT NOT NULL,
+    weekday INTEGER NOT NULL,
+    hour INTEGER NOT NULL,
+    message_count INTEGER DEFAULT 0,
+    PRIMARY KEY (guild_id, weekday, hour)
+);
+
+CREATE TABLE IF NOT EXISTS WordStats (
+    guild_id TEXT NOT NULL,
+    word TEXT NOT NULL COLLATE NOCASE,
+    count INTEGER DEFAULT 0,
+    PRIMARY KEY (guild_id, word)
+);
+
+CREATE TABLE IF NOT EXISTS LongestWord (
+    guild_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    word TEXT NOT NULL,
+    char_count INTEGER NOT NULL,
+    recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS VoiceStats (
+    guild_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    minutes REAL DEFAULT 0,
+    PRIMARY KEY (guild_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS MemberEvents (
+    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    account_created_at TEXT,
+    invite_code TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS InviteStats (
+    guild_id TEXT NOT NULL,
+    code TEXT NOT NULL,
+    inviter_id TEXT,
+    uses INTEGER DEFAULT 0,
+    PRIMARY KEY (guild_id, code)
+);
+
+CREATE TABLE IF NOT EXISTS DailyMembers (
+    guild_id TEXT NOT NULL,
+    day TEXT NOT NULL,
+    member_count INTEGER NOT NULL,
+    PRIMARY KEY (guild_id, day)
+);
+
+CREATE TABLE IF NOT EXISTS DeviceStats (
+    guild_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    desktop INTEGER DEFAULT 0,
+    mobile INTEGER DEFAULT 0,
+    web INTEGER DEFAULT 0,
+    last_seen TEXT,
+    PRIMARY KEY (guild_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_activity_guild ON UserActivity(guild_id);
+CREATE INDEX IF NOT EXISTS idx_word_stats_guild ON WordStats(guild_id, count);
+CREATE INDEX IF NOT EXISTS idx_member_events_guild ON MemberEvents(guild_id, event_type);
+"""
+
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -118,6 +207,7 @@ class Database:
         await self._conn.execute("PRAGMA journal_mode = WAL")
         await self._conn.execute("PRAGMA busy_timeout = 5000")
         await self._conn.executescript(SCHEMA)
+        await self._conn.executescript(ANALYTICS_SCHEMA)
         await self._conn.commit()
 
     async def close(self) -> None:
@@ -676,6 +766,420 @@ class Database:
     async def _fetchall(self, sql: str, params: tuple = ()) -> list[aiosqlite.Row]:
         async with self.conn.execute(sql, params) as cursor:
             return await cursor.fetchall()
+
+    async def apply_analytics_flush(self, flush) -> None:
+        from shadowmarket.analytics import AnalyticsFlush
+
+        if not isinstance(flush, AnalyticsFlush):
+            return
+        async with self._lock:
+            for (guild_id, user_id), count in flush.messages.items():
+                last = flush.last_message.get((guild_id, user_id))
+                await self.conn.execute(
+                    """
+                    INSERT INTO UserActivity (guild_id, user_id, message_count, last_message_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(guild_id, user_id) DO UPDATE SET
+                        message_count = message_count + excluded.message_count,
+                        last_message_at = CASE
+                            WHEN excluded.last_message_at IS NOT NULL
+                             AND (UserActivity.last_message_at IS NULL
+                                  OR excluded.last_message_at > UserActivity.last_message_at)
+                            THEN excluded.last_message_at
+                            ELSE UserActivity.last_message_at
+                        END
+                    """,
+                    (guild_id, user_id, count, last),
+                )
+            for (guild_id, user_id), count in flush.ping_sent.items():
+                await self.conn.execute(
+                    """
+                    INSERT INTO UserActivity (guild_id, user_id, ping_sent)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(guild_id, user_id) DO UPDATE SET
+                        ping_sent = ping_sent + excluded.ping_sent
+                    """,
+                    (guild_id, user_id, count),
+                )
+            for (guild_id, user_id), count in flush.ping_received.items():
+                await self.conn.execute(
+                    """
+                    INSERT INTO UserActivity (guild_id, user_id, ping_received)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(guild_id, user_id) DO UPDATE SET
+                        ping_received = ping_received + excluded.ping_received
+                    """,
+                    (guild_id, user_id, count),
+                )
+            for (guild_id, user_id), count in flush.everyone.items():
+                await self.conn.execute(
+                    """
+                    INSERT INTO UserActivity (guild_id, user_id, everyone_sent)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(guild_id, user_id) DO UPDATE SET
+                        everyone_sent = everyone_sent + excluded.everyone_sent
+                    """,
+                    (guild_id, user_id, count),
+                )
+            for (guild_id, channel_id), count in flush.channels.items():
+                await self.conn.execute(
+                    """
+                    INSERT INTO ChannelActivity (guild_id, channel_id, message_count)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(guild_id, channel_id) DO UPDATE SET
+                        message_count = message_count + excluded.message_count
+                    """,
+                    (guild_id, channel_id, count),
+                )
+            for (guild_id, weekday, hour), count in flush.hours.items():
+                await self.conn.execute(
+                    """
+                    INSERT INTO HourlyActivity (guild_id, weekday, hour, message_count)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(guild_id, weekday, hour) DO UPDATE SET
+                        message_count = message_count + excluded.message_count
+                    """,
+                    (guild_id, weekday, hour, count),
+                )
+            for (guild_id, word), count in flush.words.items():
+                await self.conn.execute(
+                    """
+                    INSERT INTO WordStats (guild_id, word, count)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(guild_id, word) DO UPDATE SET
+                        count = count + excluded.count
+                    """,
+                    (guild_id, word, count),
+                )
+            for guild_id, (user_id, word, char_count) in flush.longest.items():
+                existing = await self._fetchone(
+                    "SELECT char_count FROM LongestWord WHERE guild_id = ?",
+                    (guild_id,),
+                )
+                if existing is None or char_count > int(existing["char_count"]):
+                    await self.conn.execute(
+                        """
+                        INSERT INTO LongestWord (guild_id, user_id, word, char_count, recorded_at)
+                        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        ON CONFLICT(guild_id) DO UPDATE SET
+                            user_id = excluded.user_id,
+                            word = excluded.word,
+                            char_count = excluded.char_count,
+                            recorded_at = CURRENT_TIMESTAMP
+                        """,
+                        (guild_id, user_id, word, char_count),
+                    )
+            for (guild_id, user_id), minutes in flush.voice_minutes.items():
+                await self.conn.execute(
+                    """
+                    INSERT INTO VoiceStats (guild_id, user_id, minutes)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(guild_id, user_id) DO UPDATE SET
+                        minutes = minutes + excluded.minutes
+                    """,
+                    (guild_id, user_id, minutes),
+                )
+            now = _iso(_utc_now())
+            for (guild_id, user_id), (desktop, mobile, web) in flush.devices.items():
+                await self.conn.execute(
+                    """
+                    INSERT INTO DeviceStats (guild_id, user_id, desktop, mobile, web, last_seen)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(guild_id, user_id) DO UPDATE SET
+                        desktop = excluded.desktop,
+                        mobile = excluded.mobile,
+                        web = excluded.web,
+                        last_seen = excluded.last_seen
+                    """,
+                    (guild_id, user_id, desktop, mobile, web, now),
+                )
+            await self.conn.commit()
+
+    async def analytics_overview(self, guild_id: str) -> dict:
+        total = await self._fetchone(
+            "SELECT COALESCE(SUM(message_count), 0) AS n FROM UserActivity WHERE guild_id = ?",
+            (guild_id,),
+        )
+        pings = await self._fetchone(
+            "SELECT COALESCE(SUM(ping_sent), 0) AS n FROM UserActivity WHERE guild_id = ?",
+            (guild_id,),
+        )
+        speakers = await self._fetchone(
+            "SELECT COUNT(*) AS n FROM UserActivity WHERE guild_id = ? AND message_count > 0",
+            (guild_id,),
+        )
+        peak = await self._fetchone(
+            """
+            SELECT hour, SUM(message_count) AS n
+            FROM HourlyActivity
+            WHERE guild_id = ?
+            GROUP BY hour
+            ORDER BY n DESC
+            LIMIT 1
+            """,
+            (guild_id,),
+        )
+        return {
+            "messages": int(total["n"]) if total else 0,
+            "pings": int(pings["n"]) if pings else 0,
+            "speakers": int(speakers["n"]) if speakers else 0,
+            "peak_hour": int(peak["hour"]) if peak else None,
+            "peak_volume": int(peak["n"]) if peak else 0,
+        }
+
+    async def top_chatters(self, guild_id: str, limit: int = 5) -> list[aiosqlite.Row]:
+        return await self._fetchall(
+            """
+            SELECT user_id, message_count
+            FROM UserActivity
+            WHERE guild_id = ? AND message_count > 0
+            ORDER BY message_count DESC
+            LIMIT ?
+            """,
+            (guild_id, limit),
+        )
+
+    async def top_words(self, guild_id: str, limit: int = 10) -> list[aiosqlite.Row]:
+        return await self._fetchall(
+            """
+            SELECT word, count FROM WordStats
+            WHERE guild_id = ?
+            ORDER BY count DESC
+            LIMIT ?
+            """,
+            (guild_id, limit),
+        )
+
+    async def top_pingers(self, guild_id: str, limit: int = 5) -> list[aiosqlite.Row]:
+        return await self._fetchall(
+            """
+            SELECT user_id, ping_sent AS n FROM UserActivity
+            WHERE guild_id = ? AND ping_sent > 0
+            ORDER BY ping_sent DESC LIMIT ?
+            """,
+            (guild_id, limit),
+        )
+
+    async def top_ping_victims(self, guild_id: str, limit: int = 5) -> list[aiosqlite.Row]:
+        return await self._fetchall(
+            """
+            SELECT user_id, ping_received AS n FROM UserActivity
+            WHERE guild_id = ? AND ping_received > 0
+            ORDER BY ping_received DESC LIMIT ?
+            """,
+            (guild_id, limit),
+        )
+
+    async def top_everyone(self, guild_id: str, limit: int = 5) -> list[aiosqlite.Row]:
+        return await self._fetchall(
+            """
+            SELECT user_id, everyone_sent AS n FROM UserActivity
+            WHERE guild_id = ? AND everyone_sent > 0
+            ORDER BY everyone_sent DESC LIMIT ?
+            """,
+            (guild_id, limit),
+        )
+
+    async def top_channels(self, guild_id: str, limit: int = 10) -> list[aiosqlite.Row]:
+        return await self._fetchall(
+            """
+            SELECT channel_id, message_count FROM ChannelActivity
+            WHERE guild_id = ? AND message_count > 0
+            ORDER BY message_count DESC LIMIT ?
+            """,
+            (guild_id, limit),
+        )
+
+    async def hourly_totals(self, guild_id: str) -> list[aiosqlite.Row]:
+        return await self._fetchall(
+            """
+            SELECT hour, SUM(message_count) AS n
+            FROM HourlyActivity WHERE guild_id = ?
+            GROUP BY hour ORDER BY hour
+            """,
+            (guild_id,),
+        )
+
+    async def weekday_totals(self, guild_id: str) -> list[aiosqlite.Row]:
+        return await self._fetchall(
+            """
+            SELECT weekday, SUM(message_count) AS n
+            FROM HourlyActivity WHERE guild_id = ?
+            GROUP BY weekday ORDER BY weekday
+            """,
+            (guild_id,),
+        )
+
+    async def longest_word(self, guild_id: str) -> aiosqlite.Row | None:
+        return await self._fetchone(
+            "SELECT user_id, word, char_count, recorded_at FROM LongestWord WHERE guild_id = ?",
+            (guild_id,),
+        )
+
+    async def all_longest_floors(self) -> dict[str, int]:
+        rows = await self._fetchall("SELECT guild_id, char_count FROM LongestWord")
+        return {row["guild_id"]: int(row["char_count"]) for row in rows}
+
+    async def top_voice(self, guild_id: str, limit: int = 10) -> list[aiosqlite.Row]:
+        return await self._fetchall(
+            """
+            SELECT user_id, minutes FROM VoiceStats
+            WHERE guild_id = ? AND minutes > 0
+            ORDER BY minutes DESC LIMIT ?
+            """,
+            (guild_id, limit),
+        )
+
+    async def record_member_event(
+        self,
+        guild_id: str,
+        user_id: str,
+        event_type: str,
+        account_created_at: str | None = None,
+        invite_code: str | None = None,
+    ) -> None:
+        async with self._lock:
+            await self.conn.execute(
+                """
+                INSERT INTO MemberEvents (guild_id, user_id, event_type, account_created_at, invite_code)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (guild_id, user_id, event_type, account_created_at, invite_code),
+            )
+            await self.conn.commit()
+
+    async def member_event_counts(self, guild_id: str) -> dict[str, int]:
+        rows = await self._fetchall(
+            """
+            SELECT event_type, COUNT(*) AS n
+            FROM MemberEvents WHERE guild_id = ?
+            GROUP BY event_type
+            """,
+            (guild_id,),
+        )
+        return {row["event_type"]: int(row["n"]) for row in rows}
+
+    async def bump_invite(self, guild_id: str, code: str, inviter_id: str | None, delta: int = 1) -> None:
+        async with self._lock:
+            await self.conn.execute(
+                """
+                INSERT INTO InviteStats (guild_id, code, inviter_id, uses)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(guild_id, code) DO UPDATE SET
+                    uses = uses + excluded.uses,
+                    inviter_id = COALESCE(excluded.inviter_id, InviteStats.inviter_id)
+                """,
+                (guild_id, code, inviter_id, delta),
+            )
+            await self.conn.commit()
+
+    async def top_invites(self, guild_id: str, limit: int = 10) -> list[aiosqlite.Row]:
+        return await self._fetchall(
+            """
+            SELECT code, inviter_id, uses FROM InviteStats
+            WHERE guild_id = ? AND uses > 0
+            ORDER BY uses DESC LIMIT ?
+            """,
+            (guild_id, limit),
+        )
+
+    async def snapshot_members(self, guild_id: str, day: str, count: int) -> None:
+        async with self._lock:
+            await self.conn.execute(
+                """
+                INSERT INTO DailyMembers (guild_id, day, member_count)
+                VALUES (?, ?, ?)
+                ON CONFLICT(guild_id, day) DO UPDATE SET member_count = excluded.member_count
+                """,
+                (guild_id, day, count),
+            )
+            await self.conn.commit()
+
+    async def member_history(self, guild_id: str, limit: int = 30) -> list[aiosqlite.Row]:
+        return await self._fetchall(
+            """
+            SELECT day, member_count FROM DailyMembers
+            WHERE guild_id = ?
+            ORDER BY day DESC LIMIT ?
+            """,
+            (guild_id, limit),
+        )
+
+    async def retention(self, guild_id: str, days: int = 30) -> tuple[int, int]:
+        horizon = _utc_now() - timedelta(days=days)
+        joined = await self._fetchall(
+            """
+            SELECT user_id, created_at FROM MemberEvents
+            WHERE guild_id = ? AND event_type = 'JOIN'
+            ORDER BY created_at DESC
+            """,
+            (guild_id,),
+        )
+        recent = []
+        for row in joined:
+            created = _parse_ts(row["created_at"])
+            if created >= horizon:
+                recent.append(str(row["user_id"]))
+        if not recent:
+            return 0, 0
+        placeholders = ",".join("?" * len(recent))
+        active = await self._fetchone(
+            f"""
+            SELECT COUNT(*) AS n FROM UserActivity
+            WHERE guild_id = ? AND message_count > 0 AND user_id IN ({placeholders})
+            """,
+            (guild_id, *recent),
+        )
+        return len(recent), int(active["n"]) if active else 0
+
+    async def active_since(self, guild_id: str, since_iso: str) -> int:
+        row = await self._fetchone(
+            """
+            SELECT COUNT(*) AS n FROM UserActivity
+            WHERE guild_id = ? AND last_message_at IS NOT NULL AND last_message_at >= ?
+            """,
+            (guild_id, since_iso),
+        )
+        return int(row["n"]) if row else 0
+
+    async def device_totals(self, guild_id: str) -> tuple[int, int, int, int]:
+        row = await self._fetchone(
+            """
+            SELECT
+                COALESCE(SUM(desktop), 0) AS desktop,
+                COALESCE(SUM(mobile), 0) AS mobile,
+                COALESCE(SUM(web), 0) AS web,
+                COUNT(*) AS n
+            FROM DeviceStats WHERE guild_id = ?
+            """,
+            (guild_id,),
+        )
+        if not row:
+            return 0, 0, 0, 0
+        return int(row["desktop"]), int(row["mobile"]), int(row["web"]), int(row["n"])
+
+    async def account_age_buckets(self, guild_id: str) -> dict[str, int]:
+        rows = await self._fetchall(
+            """
+            SELECT account_created_at FROM MemberEvents
+            WHERE guild_id = ? AND event_type = 'JOIN' AND account_created_at IS NOT NULL
+            """,
+            (guild_id,),
+        )
+        buckets = {"< 7 days": 0, "7-30 days": 0, "1-12 months": 0, "1+ years": 0}
+        now = _utc_now()
+        for row in rows:
+            created = _parse_ts(row["account_created_at"])
+            age = (now - created).days
+            if age < 7:
+                buckets["< 7 days"] += 1
+            elif age < 30:
+                buckets["7-30 days"] += 1
+            elif age < 365:
+                buckets["1-12 months"] += 1
+            else:
+                buckets["1+ years"] += 1
+        return buckets
 
 
 class EconomyError(Exception):

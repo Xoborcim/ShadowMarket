@@ -82,3 +82,34 @@ async def test_wrong_suspect_fine(db: Database):
     taken = await db.fine_user("u1", "g1", 100)
     assert taken == 100
     assert await db.get_balance("u1", "g1") == STARTING_BALANCE - 100
+
+
+async def test_analytics_flush_and_overview(db: Database):
+    from shadowmarket.analytics import AnalyticsFlush
+
+    flush = AnalyticsFlush(
+        messages={("g1", "u1"): 10, ("g1", "u2"): 5},
+        channels={("g1", "c1"): 15},
+        ping_sent={("g1", "u1"): 3},
+        ping_received={("g1", "u2"): 3},
+        everyone={("g1", "u1"): 2},
+        hours={("g1", 1, 18): 15},
+        words={("g1", "minecraft"): 8, ("g1", "raid"): 2},
+        last_message={("g1", "u1"): "2026-01-27T18:00:00"},
+        longest={"g1": ("u1", "a" * 50, 50)},
+        voice_minutes={("g1", "u2"): 12.5},
+        devices={("g1", "u1"): (1, 0, 0)},
+    )
+    await db.apply_analytics_flush(flush)
+    overview = await db.analytics_overview("g1")
+    assert overview["messages"] == 15
+    assert overview["pings"] == 3
+    assert overview["peak_hour"] == 18
+    words = await db.top_words("g1", 2)
+    assert words[0]["word"] == "minecraft"
+    longest = await db.longest_word("g1")
+    assert int(longest["char_count"]) == 50
+    voice = await db.top_voice("g1")
+    assert float(voice[0]["minutes"]) == 12.5
+    everyone = await db.top_everyone("g1")
+    assert int(everyone[0]["n"]) == 2

@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import logging
+import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 import discord
 from discord.ext import commands
 
+from shadowmarket.analytics import AnalyticsBuffer
 from shadowmarket.cache import MarketCache
+from shadowmarket.cogs.analytics import event_from_message
 from shadowmarket.config import DATABASE_PATH, DEV_GUILD_ID
 from shadowmarket.database import Database
 from shadowmarket.tokenizer import tokenize
@@ -19,6 +23,7 @@ EXTENSIONS = (
     "shadowmarket.cogs.market",
     "shadowmarket.cogs.bounty",
     "shadowmarket.cogs.admin",
+    "shadowmarket.cogs.analytics",
     "shadowmarket.cogs.tasks",
 )
 
@@ -27,9 +32,14 @@ class ShadowMarketBot(commands.Bot):
     def __init__(self, db_path: Path | None = None) -> None:
         intents = discord.Intents.default()
         intents.message_content = True
+        intents.members = True
+        intents.voice_states = True
+        intents.presences = os.getenv("PRESENCE_INTENT", "").lower() in {"1", "true", "yes"}
         super().__init__(command_prefix=commands.when_mentioned, intents=intents, help_command=None)
         self.db = Database(db_path or DATABASE_PATH)
         self.cache = MarketCache()
+        self.analytics = AnalyticsBuffer()
+        self.started_at = datetime.now(timezone.utc)
 
     async def setup_hook(self) -> None:
         await self.db.connect()
@@ -68,11 +78,18 @@ class ShadowMarketBot(commands.Bot):
         )
 
     async def close(self) -> None:
-        pending = self.cache.drain_usage_buffer()
+        import time
+
+        now = time.monotonic()
+        for guild_id, user_id in list(self.analytics.voice_joined):
+            self.analytics.stop_voice(guild_id, user_id, now)
+        usage = self.cache.drain_usage_buffer()
+        analytics = self.analytics.drain()
         try:
-            await self.db.apply_volume_flush(pending)
+            await self.db.apply_volume_flush(usage)
+            await self.db.apply_analytics_flush(analytics)
         except Exception:
-            log.exception("Failed to flush usage buffer on shutdown")
+            log.exception("Failed to flush buffers on shutdown")
         await self.db.close()
         await super().close()
 
@@ -92,6 +109,7 @@ class ShadowMarketBot(commands.Bot):
         guild_id = str(message.guild.id)
         user_id = str(message.author.id)
         self.cache.record_message(guild_id)
+        self.analytics.ingest(event_from_message(message))
 
         tokens = tokenize(message.content)
         if not tokens:

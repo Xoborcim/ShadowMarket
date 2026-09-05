@@ -17,11 +17,12 @@ The bot never DMs, never pings, and never posts unsolicited chat messages. Tradi
 
 1. Open the [Discord Developer Portal](https://discord.com/developers/applications) and create an application.
 2. Bot → Add Bot. Copy the token.
-3. Bot → Privileged Gateway Intents → enable **Message Content Intent** (required so the bot can count keyword usage).
-4. OAuth2 → URL Generator:
+3. Bot → Privileged Gateway Intents → enable **Message Content Intent** (keyword volume + word analytics) and **Server Members Intent** (joins, retention, invite tracking).
+4. Optional: enable **Presence Intent** and set `PRESENCE_INTENT=true` in `.env` to sample desktop/mobile/web.
+5. OAuth2 → URL Generator:
    - Scopes: `bot`, `applications.commands`
-   - Bot permissions: `View Channels`, `Send Messages`, `Embed Links`, `Read Message History`, `Manage Messages` (optional, only used if you re-run `/setup_ticker` in a new channel)
-5. Invite the bot with the generated URL.
+   - Bot permissions: `View Channels`, `Send Messages`, `Embed Links`, `Read Message History`, `Manage Guild` (invite stats), `View Audit Log` (kick vs leave), `Manage Messages` (optional, only used if you re-run `/setup_ticker` in a new channel)
+6. Invite the bot with the generated URL.
 
 ### 2. Run locally
 
@@ -60,6 +61,17 @@ All replies are ephemeral except the one-time ticker post.
 | `/bounty place target keyword reward stealth` | Anyone | Escrow `reward`. Stealth costs **2×** (extra is burned) and can be slashed. Lasts 24h. |
 | `/suspect user` | Anyone | If they had a stealth bounty on you, you steal the escrow. If not, you are fined $100. |
 | `/setup_ticker` | Manage Server | Posts the single public ticker and saves its message ID. Later updates only **edit** that message. |
+| `/analytics report` | Manage Server | Full engagement report: volume, peak hour, top chatters, filtered vocabulary, pings, @everyone. |
+| `/analytics chatters` | Manage Server | Who generates the conversation (counts + %). |
+| `/analytics words` | Manage Server | Top meaningful words (NLTK-style stop words stripped) and longest-word record. |
+| `/analytics pings` | Manage Server | Top pingers and most-mentioned members. |
+| `/analytics everyone` | Manage Server | Who uses `@everyone`. |
+| `/analytics channels` | Manage Server | Most active text channels. |
+| `/analytics schedule` | Manage Server | Busiest hours (UTC) and weekdays. |
+| `/analytics voice` | Manage Server | Voice minutes and Voice XP (1 XP / minute). |
+| `/analytics growth` | Manage Server | Member trend, 30-day newcomer retention, invite sources, account age at join. |
+| `/analytics health` | Manage Server | 7-day engagement rate, boosts, bans/kicks, device sample. |
+| `/analytics backfill` | Manage Server | Ingest historical messages from before this bot session (once per catch-up). |
 
 ## Economy (from the spec)
 
@@ -76,6 +88,21 @@ P_t = P_{t-1} + (V × 0.5) − (0.02 × P_{t-1})
 
 Bounty states: `ACTIVE` → `CLAIMED` (target said the word; silent payout), `EXPIRED` (80% refund, 20% burned after 24h), `SLASHED` (correct `/suspect`; target takes 100% of escrow).
 
+## Server analytics
+
+Tracking is silent (zero-spam). Admins pull reports with `/analytics *`. Counters live in memory and flush to SQLite every 60 seconds.
+
+- **Chat:** messages, peak hour, top chatters, per-channel volume
+- **Language:** stop-word filtered vocabulary (`just`, `yeah`, `the`, … dropped) plus longest-token record
+- **Pings:** sent, received, `@everyone`
+- **Voice:** minutes in voice channels → Voice XP
+- **Growth:** daily member snapshots, invite attribution, newcomer retention, account age at join
+- **Health:** 7-day chat engagement, boosts, bans/kicks
+- **Devices:** desktop/mobile/web when Presence Intent is on
+- **Not available:** Discord does not give bots member country or IP, so there is no geo breakdown
+
+Historical catch-up: `/analytics backfill` reads channel history from *before this process started* so it does not double-count live traffic.
+
 ## Layout
 
 ```
@@ -85,9 +112,12 @@ src/shadowmarket/
   database.py     # SQLite schema and transactions
   economy.py      # IPO cost + price formula
   tokenizer.py    # unique tokens, custom emoji
+  analytics.py    # in-memory chat/voice/ping/word buffers
+  stopwords.py    # NLTK English list + chat filler
   cogs/market.py  # /ipo /buy /sell /portfolio
   cogs/bounty.py  # /bounty place /suspect
   cogs/admin.py   # /setup_ticker
+  cogs/analytics.py # /analytics * + voice/join listeners
   cogs/tasks.py   # 60s flush, hourly prices, 15m ticker edit, expiry
 ```
 

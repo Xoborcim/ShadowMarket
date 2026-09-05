@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import discord
 from discord.ext import commands, tasks
@@ -49,6 +49,15 @@ class TaskCog(commands.Cog):
             await self.bot.db.save_daily_counts(counts)
         except Exception:
             log.exception("Failed to persist daily message counts")
+        analytics = self.bot.analytics.drain()
+        try:
+            await self.bot.db.apply_analytics_flush(analytics)
+            for guild_id, (_user, _word, n) in analytics.longest.items():
+                floor = self.bot.analytics.record_floor.get(guild_id, 0)
+                self.bot.analytics.record_floor[guild_id] = max(floor, n)
+        except Exception:
+            log.exception("Failed to flush analytics")
+            self.bot.analytics.restore(analytics)
         self.bot.cache.prune_cooldowns()
 
     @flush_usage.before_loop
@@ -146,6 +155,17 @@ class TaskCog(commands.Cog):
                 await message.edit(embed=embed)
             except discord.HTTPException:
                 log.warning("Could not edit ticker for guild %s", guild_id)
+
+        today = date.today().isoformat()
+        for guild in self.bot.guilds:
+            try:
+                await self.bot.db.snapshot_members(
+                    str(guild.id),
+                    today,
+                    guild.member_count or len(guild.members),
+                )
+            except Exception:
+                log.exception("Member snapshot failed for %s", guild.id)
 
     @update_tickers.before_loop
     async def before_tickers(self) -> None:
