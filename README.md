@@ -50,7 +50,7 @@ SQLite lives in `./data/shadowmarket.db`.
 
 ## Commands
 
-All replies are ephemeral except the one-time ticker post.
+All replies are ephemeral except the ticker (edited in place) and the optional daily analytics post.
 
 | Command | Who | What |
 |---|---|---|
@@ -62,6 +62,7 @@ All replies are ephemeral except the one-time ticker post.
 | `/suspect user` | Anyone | If they had a stealth bounty on you, you steal the escrow. If not, you are fined $100. |
 | `/setup_ticker` | Manage Server | Posts the single public ticker and saves its message ID. Later updates only **edit** that message. |
 | `/analytics report` | Manage Server | Full engagement report: volume, peak hour, top chatters, filtered vocabulary, pings, @everyone. |
+| `/analytics setup` | Manage Server | Post that report in a channel every day at 3:00 AM (default `America/New_York`). |
 | `/analytics chatters` | Manage Server | Who generates the conversation (counts + %). |
 | `/analytics words` | Manage Server | Top meaningful words (NLTK-style stop words stripped) and longest-word record. |
 | `/analytics pings` | Manage Server | Top pingers and most-mentioned members. |
@@ -90,7 +91,9 @@ Bounty states: `ACTIVE` → `CLAIMED` (target said the word; silent payout), `EX
 
 ## Server analytics
 
-Tracking is silent (zero-spam). Admins pull reports with `/analytics *`. Counters live in memory and flush to SQLite every 60 seconds.
+Tracking is silent (zero-spam) until you opt into `/analytics setup`. Admins can still pull reports with `/analytics *`. Counters live in memory and flush to SQLite every 60 seconds.
+
+Daily auto-report: `/analytics setup` in the target channel. At **3:00 AM** local (default Eastern), the bot posts one public embed with no pings. If the bot is offline at 3:00, it posts once after it comes back that day. Override the timezone with `REPORT_TZ` or the `timezone` argument (IANA names).
 
 - **Chat:** messages, peak hour, top chatters, per-channel volume
 - **Language:** stop-word filtered vocabulary (`just`, `yeah`, `the`, … dropped) plus longest-token record

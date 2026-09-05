@@ -113,3 +113,16 @@ async def test_analytics_flush_and_overview(db: Database):
     assert float(voice[0]["minutes"]) == 12.5
     everyone = await db.top_everyone("g1")
     assert int(everyone[0]["n"]) == 2
+
+
+async def test_daily_report_config(db: Database):
+    await db.upsert_daily_report("g1", "111", "America/New_York", "2026-01-27")
+    row = await db.get_server_config("g1")
+    assert row["report_channel_id"] == "111"
+    assert row["report_timezone"] == "America/New_York"
+    await db.mark_daily_report_sent("g1", "2026-01-28")
+    row = await db.get_server_config("g1")
+    assert row["last_report_date"] == "2026-01-28"
+    await db.upsert_daily_report("g1", None, "America/New_York", None)
+    row = await db.get_server_config("g1")
+    assert row["report_channel_id"] is None

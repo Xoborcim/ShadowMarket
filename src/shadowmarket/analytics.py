@@ -18,6 +18,26 @@ EMOJI_MARKUP_RE = re.compile(r"<a?:[A-Za-z0-9_]+:\d+>")
 WORD_RE = re.compile(r"[a-z0-9][a-z0-9'_-]{1,}", re.IGNORECASE)
 
 
+def should_post_daily_report(
+    now: datetime,
+    last_report_date: str | None,
+    *,
+    hour: int = 3,
+    minute: int = 0,
+) -> bool:
+    """True once per local calendar day after the configured clock time."""
+    if last_report_date == now.date().isoformat():
+        return False
+    return (now.hour, now.minute) >= (hour, minute)
+
+
+def last_report_date_after_setup(now: datetime, *, hour: int = 3, minute: int = 0) -> str | None:
+    """Skip an immediate post if setup happens after today's send window."""
+    if (now.hour, now.minute) >= (hour, minute):
+        return now.date().isoformat()
+    return None
+
+
 @dataclass(slots=True)
 class ChatEvent:
     guild_id: str

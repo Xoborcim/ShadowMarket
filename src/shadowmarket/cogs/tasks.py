@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import discord
 from discord.ext import commands, tasks
 
 from shadowmarket import config
+from shadowmarket.analytics import should_post_daily_report
+from shadowmarket.cogs.analytics import build_server_report
 from shadowmarket.economy import next_price
 from shadowmarket.embeds import ticker_embed
 
@@ -24,12 +27,14 @@ class TaskCog(commands.Cog):
         self.expire_bounties.start()
         self.tick_prices.start()
         self.update_tickers.start()
+        self.daily_reports.start()
 
     async def cog_unload(self) -> None:
         self.flush_usage.cancel()
         self.expire_bounties.cancel()
         self.tick_prices.cancel()
         self.update_tickers.cancel()
+        self.daily_reports.cancel()
 
     @tasks.loop(seconds=config.FLUSH_INTERVAL_SECONDS)
     async def flush_usage(self) -> None:
@@ -169,6 +174,52 @@ class TaskCog(commands.Cog):
 
     @update_tickers.before_loop
     async def before_tickers(self) -> None:
+        await self.bot.wait_until_ready()
+
+    @tasks.loop(minutes=1)
+    async def daily_reports(self) -> None:
+        try:
+            configs = await self.bot.db.all_server_configs()
+        except Exception:
+            log.exception("Failed to load server configs for daily reports")
+            return
+        for row in configs:
+            channel_id = row["report_channel_id"]
+            if not channel_id:
+                continue
+            tz_name = row["report_timezone"] or config.REPORT_TZ
+            try:
+                tz = ZoneInfo(tz_name)
+            except ZoneInfoNotFoundError:
+                tz = ZoneInfo(config.REPORT_TZ)
+                tz_name = config.REPORT_TZ
+            now = datetime.now(tz)
+            if not should_post_daily_report(
+                now,
+                row["last_report_date"],
+                hour=config.REPORT_HOUR,
+                minute=config.REPORT_MINUTE,
+            ):
+                continue
+            channel = self.bot.get_channel(int(channel_id))
+            if not isinstance(channel, discord.TextChannel):
+                continue
+            guild = channel.guild
+            try:
+                embed = await build_server_report(self.bot, guild)
+                extra = f"Daily auto-report · {config.REPORT_HOUR:02d}:{config.REPORT_MINUTE:02d} {tz_name}"
+                footer = embed.footer.text
+                embed.set_footer(text=f"{footer} · {extra}" if footer else extra)
+                await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+                await self.bot.db.mark_daily_report_sent(str(guild.id), now.date().isoformat())
+                log.info("Posted daily analytics report for guild %s", guild.id)
+            except discord.Forbidden:
+                log.warning("Cannot post daily report in channel %s", channel_id)
+            except Exception:
+                log.exception("Daily report failed for guild %s", row["guild_id"])
+
+    @daily_reports.before_loop
+    async def before_daily_reports(self) -> None:
         await self.bot.wait_until_ready()
 
 

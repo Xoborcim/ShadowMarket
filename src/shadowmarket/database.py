@@ -62,7 +62,10 @@ CREATE TABLE IF NOT EXISTS ServerConfig (
     ticker_channel_id TEXT,
     ticker_message_id TEXT,
     daily_message_count INTEGER DEFAULT 0,
-    daily_count_date TEXT
+    daily_count_date TEXT,
+    report_channel_id TEXT,
+    last_report_date TEXT,
+    report_timezone TEXT
 );
 
 CREATE TABLE IF NOT EXISTS PriceHistory (
@@ -208,6 +211,7 @@ class Database:
         await self._conn.execute("PRAGMA busy_timeout = 5000")
         await self._conn.executescript(SCHEMA)
         await self._conn.executescript(ANALYTICS_SCHEMA)
+        await self._migrate()
         await self._conn.commit()
 
     async def close(self) -> None:
@@ -220,6 +224,17 @@ class Database:
         if self._conn is None:
             raise RuntimeError("Database is not connected")
         return self._conn
+
+    async def _migrate(self) -> None:
+        async with self.conn.execute("PRAGMA table_info(ServerConfig)") as cursor:
+            existing = {row[1] for row in await cursor.fetchall()}
+        for column, spec in (
+            ("report_channel_id", "TEXT"),
+            ("last_report_date", "TEXT"),
+            ("report_timezone", "TEXT"),
+        ):
+            if column not in existing:
+                await self.conn.execute(f"ALTER TABLE ServerConfig ADD COLUMN {column} {spec}")
 
     async def ensure_user(self, user_id: str, guild_id: str) -> float:
         async with self._lock:
@@ -709,6 +724,39 @@ class Database:
                     ticker_message_id = excluded.ticker_message_id
                 """,
                 (guild_id, channel_id, message_id),
+            )
+            await self.conn.commit()
+
+    async def upsert_daily_report(
+        self,
+        guild_id: str,
+        channel_id: str | None,
+        timezone_name: str | None,
+        last_report_date: str | None,
+    ) -> None:
+        async with self._lock:
+            await self.conn.execute(
+                """
+                INSERT INTO ServerConfig (guild_id, report_channel_id, report_timezone, last_report_date)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET
+                    report_channel_id = excluded.report_channel_id,
+                    report_timezone = COALESCE(excluded.report_timezone, ServerConfig.report_timezone),
+                    last_report_date = excluded.last_report_date
+                """,
+                (guild_id, channel_id, timezone_name, last_report_date),
+            )
+            await self.conn.commit()
+
+    async def mark_daily_report_sent(self, guild_id: str, day: str) -> None:
+        async with self._lock:
+            await self.conn.execute(
+                """
+                INSERT INTO ServerConfig (guild_id, last_report_date)
+                VALUES (?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET last_report_date = excluded.last_report_date
+                """,
+                (guild_id, day),
             )
             await self.conn.commit()
 

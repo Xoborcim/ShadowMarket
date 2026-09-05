@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-from shadowmarket.analytics import ChatEvent
-from shadowmarket.embeds import BLURPLE, GOLD, GREEN, error, info
+from shadowmarket.analytics import ChatEvent, last_report_date_after_setup
+from shadowmarket.config import REPORT_HOUR, REPORT_MINUTE, REPORT_TZ
+from shadowmarket.embeds import BLURPLE, GOLD, GREEN, error, info, success
 
 log = logging.getLogger("shadowmarket.analytics")
 
@@ -52,6 +54,93 @@ def event_from_message(message: discord.Message) -> ChatEvent:
         mobile=bool(member and member.mobile_status != discord.Status.offline),
         web=bool(member and member.web_status != discord.Status.offline),
     )
+
+
+def namer_for(bot, guild: discord.Guild | None):
+    return lambda uid: bot.trader_name(guild, str(uid))
+
+
+async def build_server_report(bot, guild: discord.Guild) -> discord.Embed:
+    gid = str(guild.id)
+    namer = namer_for(bot, guild)
+    overview = await bot.db.analytics_overview(gid)
+    chatters = await bot.db.top_chatters(gid)
+    words = await bot.db.top_words(gid)
+    pingers = await bot.db.top_pingers(gid)
+    victims = await bot.db.top_ping_victims(gid)
+    everyone = await bot.db.top_everyone(gid)
+    longest = await bot.db.longest_word(gid)
+    hours = await bot.db.hourly_totals(gid)
+
+    total = overview["messages"] or 1
+    peak = overview["peak_hour"]
+    peak_txt = "No traffic yet"
+    if peak is not None and overview["peak_volume"]:
+        share = overview["peak_volume"] / total * 100
+        peak_txt = f"{peak:02d}:00 UTC ({overview['peak_volume']:,} msgs, {share:.1f}%)"
+
+    embed = discord.Embed(
+        title=f"Server analytics — {guild.name}",
+        color=BLURPLE,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Messages tracked", value=f"{overview['messages']:,}", inline=True)
+    embed.add_field(name="Direct pings", value=f"{overview['pings']:,}", inline=True)
+    embed.add_field(name="Chatters", value=f"{overview['speakers']:,}", inline=True)
+    embed.add_field(name="Peak hour", value=peak_txt, inline=False)
+
+    chatter_lines = []
+    chatter_sum = 0
+    for i, row in enumerate(chatters, start=1):
+        n = int(row["message_count"])
+        chatter_sum += n
+        pct = n / total * 100
+        chatter_lines.append(f"`{i}.` **{namer(row['user_id'])}** — {n:,} ({pct:.1f}%)")
+    embed.add_field(
+        name="Top chatters",
+        value="\n".join(chatter_lines) or "No messages yet.",
+        inline=False,
+    )
+    if chatters:
+        embed.set_footer(
+            text=f"Top {len(chatters)} generated {chatter_sum / total * 100:.1f}% of tracked chat · UTC"
+        )
+
+    word_lines = [
+        f"`{i}.` **{row['word']}** — {int(row['count']):,}"
+        for i, row in enumerate(words, start=1)
+    ]
+    embed.add_field(
+        name="Top meaningful words (stop words filtered)",
+        value="\n".join(word_lines) or "No lexical data yet.",
+        inline=False,
+    )
+    if longest:
+        preview = longest["word"]
+        if len(preview) > 80:
+            preview = preview[:80] + "…"
+        embed.add_field(
+            name="Longest word record",
+            value=f"**{namer(longest['user_id'])}** — {int(longest['char_count'])} chars\n`{preview}`",
+            inline=False,
+        )
+
+    ping_block = "**Pingers**\n" + rank_lines(pingers, namer, "n", lambda v: f"{int(v):,}")
+    ping_block += "\n**Most mentioned**\n" + rank_lines(victims, namer, "n", lambda v: f"{int(v):,}")
+    embed.add_field(name="Ping economy", value=ping_block, inline=False)
+    embed.add_field(
+        name="@everyone",
+        value=rank_lines(everyone, namer, "n", lambda v: f"{int(v):,}"),
+        inline=False,
+    )
+
+    hour_map = {int(r["hour"]): int(r["n"]) for r in hours}
+    embed.add_field(
+        name="Activity by hour (UTC)",
+        value=sparkline([hour_map.get(h, 0) for h in range(24)]),
+        inline=False,
+    )
+    return embed
 
 
 class AnalyticsCog(commands.Cog):
@@ -156,86 +245,61 @@ class AnalyticsCog(commands.Cog):
         await self._flush()
         guild = interaction.guild
         assert guild is not None
-        gid = str(guild.id)
-        namer = self._namer(guild)
-        overview = await self.bot.db.analytics_overview(gid)
-        chatters = await self.bot.db.top_chatters(gid)
-        words = await self.bot.db.top_words(gid)
-        pingers = await self.bot.db.top_pingers(gid)
-        victims = await self.bot.db.top_ping_victims(gid)
-        everyone = await self.bot.db.top_everyone(gid)
-        longest = await self.bot.db.longest_word(gid)
-        hours = await self.bot.db.hourly_totals(gid)
-
-        total = overview["messages"] or 1
-        peak = overview["peak_hour"]
-        peak_txt = "No traffic yet"
-        if peak is not None and overview["peak_volume"]:
-            share = overview["peak_volume"] / total * 100
-            peak_txt = f"{peak:02d}:00 UTC ({overview['peak_volume']:,} msgs, {share:.1f}%)"
-
-        embed = discord.Embed(
-            title=f"Server analytics — {guild.name}",
-            color=BLURPLE,
-            timestamp=datetime.now(timezone.utc),
-        )
-        embed.add_field(name="Messages tracked", value=f"{overview['messages']:,}", inline=True)
-        embed.add_field(name="Direct pings", value=f"{overview['pings']:,}", inline=True)
-        embed.add_field(name="Chatters", value=f"{overview['speakers']:,}", inline=True)
-        embed.add_field(name="Peak hour", value=peak_txt, inline=False)
-
-        chatter_lines = []
-        chatter_sum = 0
-        for i, row in enumerate(chatters, start=1):
-            n = int(row["message_count"])
-            chatter_sum += n
-            pct = n / total * 100
-            chatter_lines.append(f"`{i}.` **{namer(row['user_id'])}** — {n:,} ({pct:.1f}%)")
-        embed.add_field(
-            name="Top chatters",
-            value="\n".join(chatter_lines) or "No messages yet.",
-            inline=False,
-        )
-        if chatters:
-            embed.set_footer(
-                text=f"Top {len(chatters)} generated {chatter_sum / total * 100:.1f}% of tracked chat · UTC"
-            )
-
-        word_lines = [
-            f"`{i}.` **{row['word']}** — {int(row['count']):,}"
-            for i, row in enumerate(words, start=1)
-        ]
-        embed.add_field(
-            name="Top meaningful words (stop words filtered)",
-            value="\n".join(word_lines) or "No lexical data yet.",
-            inline=False,
-        )
-        if longest:
-            preview = longest["word"]
-            if len(preview) > 80:
-                preview = preview[:80] + "…"
-            embed.add_field(
-                name="Longest word record",
-                value=f"**{namer(longest['user_id'])}** — {int(longest['char_count'])} chars\n`{preview}`",
-                inline=False,
-            )
-
-        ping_block = "**Pingers**\n" + rank_lines(pingers, namer, "n", lambda v: f"{int(v):,}")
-        ping_block += "\n**Most mentioned**\n" + rank_lines(victims, namer, "n", lambda v: f"{int(v):,}")
-        embed.add_field(name="Ping economy", value=ping_block, inline=False)
-        embed.add_field(
-            name="@everyone",
-            value=rank_lines(everyone, namer, "n", lambda v: f"{int(v):,}"),
-            inline=False,
-        )
-
-        hour_map = {int(r["hour"]): int(r["n"]) for r in hours}
-        embed.add_field(
-            name="Activity by hour (UTC)",
-            value=sparkline([hour_map.get(h, 0) for h in range(24)]),
-            inline=False,
-        )
+        embed = await build_server_report(self.bot, guild)
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @analytics.command(name="setup", description="Post the analytics report in a channel every day at 3:00 AM")
+    @app_commands.describe(
+        channel="Where to post (defaults to this channel)",
+        timezone="IANA timezone, default America/New_York",
+        enabled="Turn the daily post on or off",
+    )
+    @app_commands.guild_only()
+    async def setup(
+        self,
+        interaction: discord.Interaction,
+        channel: discord.TextChannel | None = None,
+        timezone: str = REPORT_TZ,
+        enabled: bool = True,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        assert guild is not None
+        if not enabled:
+            await self.bot.db.upsert_daily_report(str(guild.id), None, timezone, None)
+            await interaction.followup.send(
+                embed=success("Daily report off", "No more automatic posts. `/analytics report` still works."),
+                ephemeral=True,
+            )
+            return
+        target = channel or interaction.channel
+        if not isinstance(target, discord.TextChannel):
+            await interaction.followup.send(
+                embed=error("Wrong channel", "Pick a text channel."),
+                ephemeral=True,
+            )
+            return
+        try:
+            tz = ZoneInfo(timezone)
+        except Exception:
+            await interaction.followup.send(
+                embed=error("Unknown timezone", "Use an IANA name like `America/New_York` or `UTC`."),
+                ephemeral=True,
+            )
+            return
+        now = datetime.now(tz)
+        last = last_report_date_after_setup(now, hour=REPORT_HOUR, minute=REPORT_MINUTE)
+        await self.bot.db.upsert_daily_report(str(guild.id), str(target.id), timezone, last)
+        clock = f"{REPORT_HOUR:02d}:{REPORT_MINUTE:02d}"
+        when = "tomorrow" if last else "today"
+        await interaction.followup.send(
+            embed=success(
+                "Daily report armed",
+                f"A public report will post in {target.mention} every day at **{clock} {timezone}** "
+                f"(first post {when}). No pings. Disable with `/analytics setup enabled:False`.",
+            ),
+            ephemeral=True,
+        )
 
     @analytics.command(name="chatters", description="Who drives the conversation")
     @app_commands.guild_only()

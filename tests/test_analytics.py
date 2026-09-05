@@ -74,3 +74,16 @@ def test_voice_xp_is_minutes():
     minutes = buf.stop_voice("g", "u", now=180)
     assert minutes == 3
     assert buf.voice_minutes[("g", "u")] == 3
+
+
+def test_daily_report_posts_once_after_3am():
+    from shadowmarket.analytics import last_report_date_after_setup, should_post_daily_report
+
+    before = datetime(2026, 1, 27, 2, 59, tzinfo=timezone.utc)
+    at = datetime(2026, 1, 27, 3, 0, tzinfo=timezone.utc)
+    later = datetime(2026, 1, 27, 15, 0, tzinfo=timezone.utc)
+    assert should_post_daily_report(before, None) is False
+    assert should_post_daily_report(at, None) is True
+    assert should_post_daily_report(later, "2026-01-27") is False
+    assert last_report_date_after_setup(before) is None
+    assert last_report_date_after_setup(later) == "2026-01-27"
