@@ -36,6 +36,9 @@ class AdminCog(commands.Cog):
                 "keyword": row["keyword"],
                 "current_price": float(row["current_price"]),
                 "previous_price": float(row["previous_price"]),
+                "pending_volume": self.bot.cache.period_volume.get(
+                    (guild_id, row["keyword"]), 0
+                ),
             }
             for row in stocks
         ]

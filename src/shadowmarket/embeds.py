@@ -120,8 +120,16 @@ def ticker_embed(
     else:
         embed.add_field(name="💰 Server Richest", value="No traders yet.", inline=False)
 
-    embed.set_footer(text="Last updated")
+    embed.set_footer(text="Prices recast hourly from unique uses · Last updated")
     return embed
+
+
+def _pending_suffix(stock: dict) -> str:
+    pending = int(stock.get("pending_volume") or 0)
+    if pending <= 0:
+        return ""
+    noun = "use" if pending == 1 else "uses"
+    return f"  · {pending} {noun} this hour"
 
 
 def _stock_lines(stocks: list[dict]) -> str:
@@ -132,5 +140,6 @@ def _stock_lines(stocks: list[dict]) -> str:
         pct = percent_change(stock["current_price"], stock["previous_price"])
         lines.append(
             f"`{stock['keyword']}`  {money(stock['current_price'])}  {signed_pct(pct)}"
+            + _pending_suffix(stock)
         )
     return "\n".join(lines)

@@ -15,7 +15,7 @@ from shadowmarket.cache import MarketCache
 from shadowmarket.cogs.analytics import event_from_message
 from shadowmarket.config import DATABASE_PATH, DEV_GUILD_ID
 from shadowmarket.database import Database
-from shadowmarket.tokenizer import tokenize
+from shadowmarket.tokenizer import keyword_hits
 
 log = logging.getLogger("shadowmarket")
 
@@ -141,20 +141,13 @@ class ShadowMarketBot(commands.Bot):
         self.cache.record_message(guild_id)
         self.analytics.ingest(event_from_message(message))
 
-        tokens = tokenize(message.content)
-        if not tokens:
+        stock_set = self.cache.stocks.get(guild_id) or set()
+        bounty_index = self.cache.bounties_by_keyword.get(guild_id) or {}
+        universe = stock_set | set(bounty_index.keys())
+        if not universe:
             return
 
-        stock_set = self.cache.stocks.get(guild_id)
-        bounty_index = self.cache.bounties_by_keyword.get(guild_id)
-
-        hits: set[str] = set()
-        if stock_set:
-            hits |= tokens & stock_set
-        if bounty_index:
-            hits |= tokens & set(bounty_index.keys())
-
-        for keyword in hits:
+        for keyword in keyword_hits(message.content, universe):
             self.cache.hit_stock(guild_id, user_id, keyword)
             await self._try_claim_bounties(guild_id, user_id, keyword)
 

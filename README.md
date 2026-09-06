@@ -84,7 +84,8 @@ Hourly price tick:
 P_t = P_{t-1} + (V × 0.5) − (0.02 × P_{t-1})
 ```
 
-- `V` is unique usage that hour (one hit per user per keyword per 60 seconds; repeats in one message do not stack).
+- `V` is unique usage that hour (one hit per user per keyword per 60 seconds; repeats in one message do not stack). Multi-word listings like `hi back` match the whole phrase, not the separate words.
+- Prices recast **once an hour**. The ticker shows pending uses this hour until that recast.
 - Prices cannot fall below **$10**.
 - If the server sends fewer than **50 messages/day**, decay pauses so inactive servers do not wipe the book.
 - Bounties are zero-sum (or negative-sum with stealth fees). New money only comes from price appreciation.

@@ -8,6 +8,7 @@ import unicodedata
 
 CUSTOM_EMOJI_RE = re.compile(r"<a?:([A-Za-z0-9_]+):\d+>")
 SHORTCODE_RE = re.compile(r":([A-Za-z0-9_]+):")
+WHITESPACE_RE = re.compile(r"\s+")
 
 
 def normalize_keyword(raw: str) -> str:
@@ -24,7 +25,7 @@ def normalize_keyword(raw: str) -> str:
     if short:
         return f":{short.group(1).lower()}:"
 
-    return text.lower()
+    return WHITESPACE_RE.sub(" ", text.lower())
 
 
 def tokenize(content: str) -> set[str]:
@@ -52,6 +53,28 @@ def tokenize(content: str) -> set[str]:
             tokens.add(word)
 
     return {token for token in tokens if token}
+
+
+def keyword_hits(content: str, keywords: set[str]) -> set[str]:
+    """Match listed stocks/bounties, including multi-word phrases like `hi back`.
+
+    Single-token listings still use the unique-token set (O(1)). Phrases are
+    matched as whole words so `high back` does not count as `hi back`.
+    """
+    if not keywords:
+        return set()
+    tokens = tokenize(content)
+    hits = tokens & keywords
+    collapsed = WHITESPACE_RE.sub(" ", content.lower())
+    for keyword in keywords:
+        if keyword in hits:
+            continue
+        if keyword not in collapsed:
+            continue
+        pattern = r"(?<!\w)" + re.escape(keyword) + r"(?!\w)"
+        if re.search(pattern, collapsed):
+            hits.add(keyword)
+    return hits
 
 
 def _is_emoji(text: str) -> bool:

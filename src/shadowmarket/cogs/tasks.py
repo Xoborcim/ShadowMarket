@@ -144,6 +144,9 @@ class TaskCog(commands.Cog):
                     "keyword": s["keyword"],
                     "current_price": float(s["current_price"]),
                     "previous_price": float(s["previous_price"]),
+                    "pending_volume": self.bot.cache.period_volume.get(
+                        (guild_id, s["keyword"]), 0
+                    ),
                 }
                 for s in stocks
             ]
