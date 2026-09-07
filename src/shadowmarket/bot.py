@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 from shadowmarket.analytics import AnalyticsBuffer, ChatEvent
@@ -36,7 +37,15 @@ class ShadowMarketBot(commands.Bot):
         intents.members = True
         intents.voice_states = True
         intents.presences = os.getenv("PRESENCE_INTENT", "").lower() in {"1", "true", "yes"}
-        super().__init__(command_prefix=commands.when_mentioned, intents=intents, help_command=None)
+        super().__init__(
+            command_prefix=commands.when_mentioned,
+            intents=intents,
+            help_command=None,
+            allowed_installs=app_commands.AppInstallationType(guild=True, user=False),
+            allowed_contexts=app_commands.AppCommandContext(
+                guild=True, dm_channel=False, private_channel=False
+            ),
+        )
         self.db = Database(db_path or DATABASE_PATH)
         self.cache = MarketCache()
         self.analytics = AnalyticsBuffer()
@@ -54,10 +63,21 @@ class ShadowMarketBot(commands.Bot):
         self.tree.error(self.on_app_command_error)
 
     async def _sync_app_commands(self) -> None:
-        """Guild-only sync. Global + guild copies show as duplicates in the / menu."""
+        """One copy per command: guild-scoped and guild-install only."""
         guilds = list(self.guilds)
         if DEV_GUILD_ID and not any(g.id == DEV_GUILD_ID for g in guilds):
             guilds.append(discord.Object(id=DEV_GUILD_ID))  # type: ignore[arg-type]
+
+        try:
+            if self.application_id is not None:
+                await self.http.bulk_upsert_global_commands(self.application_id, [])
+                leftover = await self.tree.fetch_commands()
+                log.info(
+                    "Global slash commands after clear: %s",
+                    ", ".join(c.name for c in leftover) or "(none)",
+                )
+        except discord.HTTPException:
+            log.exception("Failed to clear global slash commands")
 
         for guild in guilds:
             try:
@@ -71,13 +91,6 @@ class ShadowMarketBot(commands.Bot):
                 )
             except discord.HTTPException:
                 log.exception("Guild command sync failed for %s", getattr(guild, "id", guild))
-
-        try:
-            if self.application_id is not None:
-                await self.http.bulk_upsert_global_commands(self.application_id, [])
-                log.info("Cleared global slash commands (guild copies remain)")
-        except discord.HTTPException:
-            log.exception("Failed to clear global slash commands")
 
     async def _hydrate_cache(self) -> None:
         pairs = await self.db.all_active_stock_keywords()
