@@ -2,7 +2,7 @@
 
 A zero-spam Discord bot: a stock market for your server's inside jokes, plus a stealth bounty board.
 
-The bot never DMs, never pings, and never posts unsolicited chat messages. Trading happens through ephemeral slash commands (only you see them). The only public surface is a single ticker embed that is **edited in place**.
+The bot never DMs, never pings for trading, and never posts unsolicited chat messages except: the ticker (edited in place), the optional daily analytics post, and **voice consent pings** in a VC before recording.
 
 ## Game loop
 
@@ -21,10 +21,10 @@ The bot never DMs, never pings, and never posts unsolicited chat messages. Tradi
 4. Optional: enable **Presence Intent** and set `PRESENCE_INTENT=true` in `.env` to sample desktop/mobile/web.
 5. OAuth2 → URL Generator:
    - Scopes: `bot`, `applications.commands`
-   - Bot permissions: `View Channels`, `Send Messages`, `Embed Links`, `Read Message History`, `Manage Guild` (invite stats), `View Audit Log` (kick vs leave), `Manage Messages` (optional, only used if you re-run `/setup_ticker` in a new channel)
+   - Bot permissions: `View Channels`, `Send Messages`, `Embed Links`, `Read Message History`, `Connect`, `Speak`, `Manage Guild` (invite stats), `View Audit Log` (kick vs leave), `Manage Messages` (optional, only used if you re-run `/setup_ticker` in a new channel)
 6. Invite the bot with the generated URL.
 
-Slash commands are synced to each server on startup (they should appear within a few seconds). `/analytics` only shows for members with **Manage Server**. If the menu is empty, fully restart the bot, then restart the Discord client (Ctrl/Cmd+R). Re-invite with the `applications.commands` scope if the bot was added without it.
+Slash commands are synced to each server on startup (they should appear within a few seconds). `/analytics` only shows for members with **Manage Server**. If the menu is empty or commands are duplicated, fully restart the bot, then restart the Discord client (Ctrl/Cmd+R). Re-invite with the `applications.commands` scope if the bot was added without it.
 
 ### 2. Run locally
 
@@ -32,12 +32,12 @@ Slash commands are synced to each server on startup (they should appear within a
 cd ShadowMarket
 python3.12 -m venv .venv
 source .venv/bin/activate
-pip install -e .
+pip install -e .   # re-run after pulling; voice needs extra packages
 pip install -r requirements-dev.txt
 cp .env.example .env
 # paste DISCORD_TOKEN into .env
-# optional while iterating: DEV_GUILD_ID=<your server id> so slash commands appear instantly
 python -m shadowmarket
+# first VC listen downloads the Whisper model (~150 MB for base.en)
 ```
 
 ### 3. Run with Docker
@@ -52,7 +52,7 @@ SQLite lives in `./data/shadowmarket.db`.
 
 ## Commands
 
-All replies are ephemeral except the ticker (edited in place) and the optional daily analytics post.
+All replies are ephemeral except the ticker (edited in place), the optional daily analytics post, and voice consent prompts.
 
 | Command | Who | What |
 |---|---|---|
@@ -75,6 +75,9 @@ All replies are ephemeral except the ticker (edited in place) and the optional d
 | `/analytics growth` | Manage Server | Member trend, 30-day newcomer retention, invite sources, account age at join. |
 | `/analytics health` | Manage Server | 7-day engagement rate, boosts, bans/kicks, device sample. |
 | `/analytics backfill` | Manage Server | Ingest historical messages from before this bot session (once per catch-up). |
+| `/listen pause` | Manage Server | Stop joining VCs and asking for consent. |
+| `/listen resume` | Manage Server | Resume joining the busiest VC after consent. |
+| `/listen status` | Manage Server | Who is currently being transcribed. |
 
 ## Economy (from the spec)
 
@@ -101,13 +104,18 @@ Daily auto-report: `/analytics setup` in the target channel. At **3:00 AM** loca
 - **Chat:** messages, peak hour, top chatters, per-channel volume
 - **Language:** stop-word filtered vocabulary (`just`, `yeah`, `the`, … dropped) plus longest-token record
 - **Pings:** sent, received, `@everyone`
-- **Voice:** minutes in voice channels → Voice XP
-- **Growth:** daily member snapshots, invite attribution, newcomer retention, account age at join
-- **Health:** 7-day chat engagement, boosts, bans/kicks
-- **Devices:** desktop/mobile/web when Presence Intent is on
-- **Not available:** Discord does not give bots member country or IP, so there is no geo breakdown
+- **Voice:** minutes in voice channels → Voice XP; consented speech is transcribed into word stats and stock volume
 
 Historical catch-up: `/analytics backfill` reads channel history from *before this process started* so it does not double-count live traffic.
+
+## Voice transcription
+
+The bot watches for the **busiest voice channel** (most non-bot members). Before joining it pings the people in that VC and asks them to react:
+
+- ✅ — transcribe my voice for stocks and analytics
+- ❌ — do not transcribe me
+
+It joins after someone consents (or after 45s if anyone has). Only consenting users are sent through Whisper. Late joiners get their own ping pointing at the same consent message. Switch to a different VC only if it is clearly busier (2+ more people). First Whisper run downloads the `base.en` model. Disable with `VOICE_LISTEN=false` or `/listen pause`.
 
 ## Layout
 
@@ -124,6 +132,7 @@ src/shadowmarket/
   cogs/bounty.py  # /bounty place /suspect
   cogs/admin.py   # /setup_ticker
   cogs/analytics.py # /analytics * + voice/join listeners
+  cogs/voice_listen.py # busiest-VC consent + Whisper
   cogs/tasks.py   # 60s flush, hourly prices, 15m ticker edit, expiry
 ```
 

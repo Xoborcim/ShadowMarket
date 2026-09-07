@@ -10,7 +10,7 @@ from pathlib import Path
 import discord
 from discord.ext import commands
 
-from shadowmarket.analytics import AnalyticsBuffer
+from shadowmarket.analytics import AnalyticsBuffer, ChatEvent
 from shadowmarket.cache import MarketCache
 from shadowmarket.cogs.analytics import event_from_message
 from shadowmarket.config import DATABASE_PATH, DEV_GUILD_ID
@@ -24,6 +24,7 @@ EXTENSIONS = (
     "shadowmarket.cogs.bounty",
     "shadowmarket.cogs.admin",
     "shadowmarket.cogs.analytics",
+    "shadowmarket.cogs.voice_listen",
     "shadowmarket.cogs.tasks",
 )
 
@@ -53,7 +54,7 @@ class ShadowMarketBot(commands.Bot):
         self.tree.error(self.on_app_command_error)
 
     async def _sync_app_commands(self) -> None:
-        """Guild sync is instant; global sync can take up to an hour."""
+        """Guild-only sync. Global + guild copies show as duplicates in the / menu."""
         guilds = list(self.guilds)
         if DEV_GUILD_ID and not any(g.id == DEV_GUILD_ID for g in guilds):
             guilds.append(discord.Object(id=DEV_GUILD_ID))  # type: ignore[arg-type]
@@ -72,10 +73,11 @@ class ShadowMarketBot(commands.Bot):
                 log.exception("Guild command sync failed for %s", getattr(guild, "id", guild))
 
         try:
-            synced = await self.tree.sync()
-            log.info("Synced %s global commands (may take up to an hour to appear)", len(synced))
+            if self.application_id is not None:
+                await self.http.bulk_upsert_global_commands(self.application_id, [])
+                log.info("Cleared global slash commands (guild copies remain)")
         except discord.HTTPException:
-            log.exception("Global command sync failed")
+            log.exception("Failed to clear global slash commands")
 
     async def _hydrate_cache(self) -> None:
         pairs = await self.db.all_active_stock_keywords()
@@ -148,6 +150,40 @@ class ShadowMarketBot(commands.Bot):
             return
 
         for keyword in keyword_hits(message.content, universe):
+            self.cache.hit_stock(guild_id, user_id, keyword)
+            await self._try_claim_bounties(guild_id, user_id, keyword)
+
+    async def ingest_spoken_text(
+        self,
+        guild: discord.Guild,
+        member: discord.Member,
+        channel_id: str,
+        text: str,
+    ) -> None:
+        """Treat a VC transcript like a chat message for stocks, bounties, and analytics."""
+        if not text.strip() or member.bot:
+            return
+        guild_id = str(guild.id)
+        user_id = str(member.id)
+        self.cache.record_message(guild_id)
+        self.analytics.ingest(
+            ChatEvent(
+                guild_id=guild_id,
+                channel_id=channel_id,
+                user_id=user_id,
+                content=text,
+                created_at=datetime.now(timezone.utc),
+                mentioned_ids=[],
+                mention_everyone=False,
+            )
+        )
+        log.info("VC transcript %s/%s: %s", guild_id, user_id, text[:120])
+        universe = (self.cache.stocks.get(guild_id) or set()) | set(
+            (self.cache.bounties_by_keyword.get(guild_id) or {}).keys()
+        )
+        if not universe:
+            return
+        for keyword in keyword_hits(text, universe):
             self.cache.hit_stock(guild_id, user_id, keyword)
             await self._try_claim_bounties(guild_id, user_id, keyword)
 
