@@ -8,7 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     DATABASE_PATH=/data/shadowmarket.db
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libgomp1 \
+    && apt-get install -y --no-install-recommends libgomp1 libopus0 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

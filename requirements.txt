@@ -1,7 +1,7 @@
 discord.py[voice]>=2.4.0,<3
 aiosqlite>=0.20.0
 python-dotenv>=1.0.1
-discord-ext-voice-recv>=0.5.0
+discord-ext-voice-recv>=0.5.0a167
 numpy>=2.0.0
 faster-whisper>=1.1.0
 
