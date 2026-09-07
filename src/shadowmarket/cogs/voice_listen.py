@@ -14,6 +14,7 @@ from discord.ext import commands, tasks
 from shadowmarket import config
 from shadowmarket.embeds import GOLD, info, success
 from shadowmarket.voice_audio import UtteranceAssembler, busiest_channel_id, should_switch_channel
+from shadowmarket.voice_sink import DavePcmSink
 
 log = logging.getLogger("shadowmarket.voice")
 
@@ -277,7 +278,7 @@ class VoiceListenCog(commands.Cog):
             return
         if vc.is_listening():
             vc.stop_listening()
-        vc.listen(voice_recv.BasicSink(self._on_packet))
+        vc.listen(DavePcmSink(self._on_packet))
         state.waiting = False
         state.target_id = channel.id
         try:
