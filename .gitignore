@@ -9,6 +9,7 @@ __pycache__/
 data/*.db
 data/*.db-wal
 data/*.db-shm
+data/back_jams/
 *.db
 *.db-wal
 *.db-shm

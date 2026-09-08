@@ -45,9 +45,27 @@ REPORT_TZ = os.getenv("REPORT_TZ", "America/New_York")
 
 VOICE_LISTEN = os.getenv("VOICE_LISTEN", "true").lower() not in {"0", "false", "no"}
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base.en")
+_DEFAULT_WHISPER_HINTS = "rizz, skibidi, skibidi toilet, tung tung tung sahur, gyatt, sigma, ohio"
+WHISPER_HINTS = [
+    part.strip().lower()
+    for part in os.getenv("WHISPER_HINTS", _DEFAULT_WHISPER_HINTS).split(",")
+    if part.strip()
+]
+WHISPER_HINT_MAX_CHARS = 350
 VOICE_POLL_SECONDS = 20
 VOICE_CONSENT_SECONDS = 45
 VOICE_PROMPT_COOLDOWN = 600
 VOICE_SWITCH_MARGIN = 2
 CONSENT_YES = "✅"
 CONSENT_NO = "❌"
+
+# "back" soundboard: download a YouTube playlist and play a short clip in VC.
+BACK_JAM_ENABLED = os.getenv("BACK_JAM_ENABLED", "true").lower() not in {"0", "false", "no"}
+BACK_JAM_PLAYLIST_URL = os.getenv(
+    "BACK_JAM_PLAYLIST_URL",
+    "https://www.youtube.com/playlist?list=PLWVz9oaYquijWE-lRZxFJd0op8D8qgo2H",
+)
+BACK_JAM_DIR = Path(os.getenv("BACK_JAM_DIR", str(DATABASE_PATH.parent / "back_jams")))
+BACK_JAM_CLIP_SECONDS = int(os.getenv("BACK_JAM_CLIP_SECONDS", "30"))
+BACK_JAM_COOLDOWN_SECONDS = float(os.getenv("BACK_JAM_COOLDOWN_SECONDS", "15"))
+BACK_JAM_TRIGGER = os.getenv("BACK_JAM_TRIGGER", "back").strip().lower() or "back"

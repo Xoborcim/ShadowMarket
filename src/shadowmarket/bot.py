@@ -14,7 +14,7 @@ from discord.ext import commands
 from shadowmarket.analytics import AnalyticsBuffer, ChatEvent
 from shadowmarket.cache import MarketCache
 from shadowmarket.cogs.analytics import event_from_message
-from shadowmarket.config import DATABASE_PATH, DEV_GUILD_ID
+from shadowmarket.config import BACK_JAM_TRIGGER, DATABASE_PATH, DEV_GUILD_ID
 from shadowmarket.database import Database
 from shadowmarket.tokenizer import keyword_hits
 
@@ -155,6 +155,7 @@ class ShadowMarketBot(commands.Bot):
         user_id = str(message.author.id)
         self.cache.record_message(guild_id)
         self.analytics.ingest(event_from_message(message))
+        await self._maybe_back_jam(message.guild, message.content)
 
         stock_set = self.cache.stocks.get(guild_id) or set()
         bounty_index = self.cache.bounties_by_keyword.get(guild_id) or {}
@@ -191,6 +192,7 @@ class ShadowMarketBot(commands.Bot):
             )
         )
         log.info("VC transcript %s/%s: %s", guild_id, user_id, text[:120])
+        await self._maybe_back_jam(guild, text)
         universe = (self.cache.stocks.get(guild_id) or set()) | set(
             (self.cache.bounties_by_keyword.get(guild_id) or {}).keys()
         )
@@ -199,6 +201,18 @@ class ShadowMarketBot(commands.Bot):
         for keyword in keyword_hits(text, universe):
             self.cache.hit_stock(guild_id, user_id, keyword)
             await self._try_claim_bounties(guild_id, user_id, keyword)
+
+    async def _maybe_back_jam(self, guild: discord.Guild, text: str) -> None:
+        trigger = BACK_JAM_TRIGGER
+        if not trigger or trigger not in keyword_hits(text, {trigger}):
+            return
+        cog = self.get_cog("VoiceListenCog")
+        if cog is None:
+            return
+        play = getattr(cog, "play_back_jam", None)
+        if play is None:
+            return
+        await play(guild)
 
     async def _try_claim_bounties(self, guild_id: str, speaker_id: str, keyword: str) -> None:
         claims = self.cache.matching_claimable(guild_id, keyword, speaker_id)

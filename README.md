@@ -117,6 +117,12 @@ The bot watches for the **busiest voice channel** (most non-bot members). Before
 
 It joins after someone consents (or after 45s if anyone has). Only consenting users are sent through Whisper. Late joiners get their own ping pointing at the same consent message. Switch to a different VC only if it is clearly busier (2+ more people). First Whisper run downloads the `base.en` model. Disable with `VOICE_LISTEN=false` or `/listen pause`.
 
+Meme phrases work the same as other stocks: `/ipo skibidi toilet` (or `rizz`, `tung tung tung sahur`, …). Typed chat matches the whole phrase. In VC, Whisper is biased toward **listed stocks** plus `WHISPER_HINTS` so those names are less likely to come out as gibberish.
+
+### "back" jams
+
+On startup the bot downloads [this playlist](https://www.youtube.com/playlist?list=PLWVz9oaYquijWE-lRZxFJd0op8D8qgo2H) into `data/back_jams/` (Docker: `/data/back_jams` on the homelab host). When someone says the whole word **back** in chat or consented VC speech, and the bot is already in a voice channel, it plays **30 seconds** of a random track. Cooldown is 15s; disable with `BACK_JAM_ENABLED=false`.
+
 ## Layout
 
 ```

@@ -13,6 +13,7 @@ from discord.ext import commands, tasks
 
 from shadowmarket import config
 from shadowmarket.embeds import GOLD, info, success
+from shadowmarket.playlist import download_playlist, list_tracks, pick_track
 from shadowmarket.voice_audio import UtteranceAssembler, busiest_channel_id, should_switch_channel
 from shadowmarket.voice_sink import DavePcmSink
 
@@ -34,6 +35,7 @@ class GuildVoiceState:
     prompted: set[int] = field(default_factory=set)
     prompt_started: float = 0.0
     last_denied_prompt: float = 0.0
+    last_back_jam: float = 0.0
     waiting: bool = False
     paused: bool = False
 
@@ -51,23 +53,67 @@ class VoiceListenCog(commands.Cog):
         self._packets: asyncio.Queue = asyncio.Queue()
         self._assemblers = {}
         self._worker: asyncio.Task | None = None
+        self._download_task: asyncio.Task | None = None
 
     async def cog_load(self) -> None:
         if config.VOICE_LISTEN:
             self.watch_voice.start()
             self._worker = asyncio.create_task(self._transcribe_worker(), name="voice-stt")
+        if config.BACK_JAM_ENABLED:
+            self._download_task = asyncio.create_task(self._ensure_playlist(), name="back-jam-dl")
 
     async def cog_unload(self) -> None:
         self.watch_voice.cancel()
         if self._worker:
             self._worker.cancel()
+        if self._download_task:
+            self._download_task.cancel()
         for guild in list(self.bot.guilds):
             vc = guild.voice_client
             if vc:
                 await vc.disconnect(force=True)
 
+    async def _ensure_playlist(self) -> None:
+        try:
+            count = await asyncio.to_thread(download_playlist)
+            log.info("Back-jam playlist has %s track(s)", count)
+        except Exception:
+            log.exception("Back-jam playlist download failed")
+
     def _state(self, guild_id: int) -> GuildVoiceState:
         return self.states.setdefault(guild_id, GuildVoiceState())
+
+    async def play_back_jam(self, guild: discord.Guild) -> bool:
+        """Play a short random playlist clip in the VC this bot is already in."""
+        if not config.BACK_JAM_ENABLED:
+            return False
+        vc = guild.voice_client
+        if vc is None or not vc.is_connected():
+            return False
+        state = self._state(guild.id)
+        now = time.monotonic()
+        if now - state.last_back_jam < config.BACK_JAM_COOLDOWN_SECONDS:
+            return False
+        if vc.is_playing():
+            return False
+        track = pick_track()
+        if track is None:
+            if not list_tracks():
+                log.warning("No back-jam tracks downloaded yet")
+            return False
+        try:
+            source = discord.FFmpegPCMAudio(
+                str(track),
+                before_options="-nostdin",
+                options=f"-t {config.BACK_JAM_CLIP_SECONDS}",
+            )
+            vc.play(source)
+        except Exception:
+            log.exception("Failed to play back-jam %s", track.name)
+            return False
+        state.last_back_jam = now
+        log.info("Playing back-jam %s for %ss in guild %s", track.name, config.BACK_JAM_CLIP_SECONDS, guild.id)
+        return True
 
     @listen.command(name="pause", description="Stop joining voice and prompting for consent")
     @app_commands.guild_only()
@@ -270,7 +316,7 @@ class VoiceListenCog(commands.Cog):
         try:
             if guild.voice_client:
                 await guild.voice_client.disconnect()
-            vc = await channel.connect(cls=voice_recv.VoiceRecvClient, self_mute=True, self_deaf=False)
+            vc = await channel.connect(cls=voice_recv.VoiceRecvClient, self_mute=False, self_deaf=False)
         except discord.HTTPException:
             log.exception("Failed to join voice %s", channel.id)
             return
@@ -334,8 +380,11 @@ class VoiceListenCog(commands.Cog):
 
         while True:
             guild, user_id, pcm = await self._packets.get()
+            universe = (self.bot.cache.stocks.get(str(guild.id)) or set()) | set(
+                (self.bot.cache.bounties_by_keyword.get(str(guild.id)) or {}).keys()
+            )
             try:
-                text = await asyncio.to_thread(transcribe_pcm48, pcm)
+                text = await asyncio.to_thread(transcribe_pcm48, pcm, list(universe))
             except Exception:
                 log.exception("Transcription failed")
                 continue
