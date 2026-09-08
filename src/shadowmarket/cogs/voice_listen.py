@@ -83,6 +83,17 @@ class VoiceListenCog(commands.Cog):
     def _state(self, guild_id: int) -> GuildVoiceState:
         return self.states.setdefault(guild_id, GuildVoiceState())
 
+    async def _ensure_unmuted(self, guild: discord.Guild) -> None:
+        """Force the bot's voice state off mute/deaf so clips can be heard."""
+        vc = guild.voice_client
+        channel = vc.channel if vc else None
+        if channel is None:
+            return
+        try:
+            await guild.change_voice_state(channel=channel, self_mute=False, self_deaf=False)
+        except Exception:
+            log.exception("Failed to unmute in guild %s", guild.id)
+
     async def play_back_jam(self, guild: discord.Guild) -> bool:
         """Play a short random playlist clip in the VC this bot is already in."""
         if not config.BACK_JAM_ENABLED:
@@ -101,6 +112,7 @@ class VoiceListenCog(commands.Cog):
             if not list_tracks():
                 log.warning("No back-jam tracks downloaded yet")
             return False
+        await self._ensure_unmuted(guild)
         try:
             source = discord.FFmpegPCMAudio(
                 str(track),
@@ -327,6 +339,7 @@ class VoiceListenCog(commands.Cog):
         vc.listen(DavePcmSink(self._on_packet))
         state.waiting = False
         state.target_id = channel.id
+        await self._ensure_unmuted(guild)
         try:
             await channel.send(
                 embed=info(
